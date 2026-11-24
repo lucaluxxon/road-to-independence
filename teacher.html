@@ -17,7 +17,7 @@ table{width:100%;border-collapse:collapse}th,td{border:1px solid var(--line);pad
 <body><div class="wrap">
 <h1>Road to Independence – Live-Lehreransicht</h1>
 <div class="card">
- <p>Diese Ansicht zeigt nur Schüler, deren Spiel <b>gerade geöffnet und verbunden</b> ist. Es werden keine Spielstände aus einer Datenbank geladen.</p>
+ <p>Diese Ansicht zeigt nur Schüler, deren Spiel <b>gerade geöffnet und verbunden</b> ist. Der Fortschritt wird ungefähr alle 15 Sekunden aktualisiert; es werden keine dauerhaften Spielstände gespeichert.</p>
  <div class="controls">
   <label>Sitzungscode: <input id="sessionCode" placeholder="z. B. 8b-1911"></label>
   <button id="connectBtn">Live verbinden</button>
@@ -46,7 +46,18 @@ const slug=v=>String(v||"").trim().toLowerCase().replace(/[^a-z0-9_-]+/g,"-").re
 const esc=v=>String(v||"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 if(cfg.SUPABASE_URL&&key&&!cfg.SUPABASE_URL.includes("YOUR_")){
  const mod=await import("https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm");
- sb=mod.createClient(cfg.SUPABASE_URL,key,{auth:{persistSession:false,autoRefreshToken:false,detectSessionInUrl:false}});
+ sb=mod.createClient(cfg.SUPABASE_URL,key,{
+   auth:{persistSession:false,autoRefreshToken:false,detectSessionInUrl:false},
+   realtime:{
+    worker:true,
+    heartbeatIntervalMs:15000,
+    heartbeatCallback:(status)=>{
+     if((status==="timeout"||status==="disconnected")&&sb){
+      try{sb.realtime.connect()}catch(e){console.warn("Realtime reconnect:",e)}
+     }
+    }
+   }
+  });
 }else{
  $("statusText").textContent="config.js ist noch nicht eingerichtet";
  $("dot").classList.add("err");

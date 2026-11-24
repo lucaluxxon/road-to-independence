@@ -235,7 +235,7 @@ input{width:100%;padding:12px;border-radius:8px;border:1px solid var(--line);bac
 
 <script type="module">
 const cfg=window.ROAD_CONFIG||{};
-let supabase=null,liveChannel=null,liveReady=false,clientKey=null;
+let supabase=null,liveChannel=null,liveReady=false,clientKey=null,liveTicker=null,liveDirty=true,lastPresenceTrack=0;
 const $=id=>document.getElementById(id);
 const STATION_IDS=["s1","s2","s3","s4","s5","s6","s7","s8","s9","s10"];
 const READ={s1:22,s2:24,s3:24,s4:26,s5:27,s6:25,s7:30,s8:28,s9:30,s10:28};
@@ -320,7 +320,18 @@ async function initLiveClient(){
  }
  try{
   const mod=await import("https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm");
-  supabase=mod.createClient(cfg.SUPABASE_URL,key,{auth:{persistSession:false,autoRefreshToken:false,detectSessionInUrl:false}});
+  supabase=mod.createClient(cfg.SUPABASE_URL,key,{
+   auth:{persistSession:false,autoRefreshToken:false,detectSessionInUrl:false},
+   realtime:{
+    worker:true,
+    heartbeatIntervalMs:15000,
+    heartbeatCallback:(status)=>{
+     if((status==="timeout"||status==="disconnected")&&supabase){
+      try{supabase.realtime.connect()}catch(e){console.warn("Realtime reconnect:",e)}
+     }
+    }
+   }
+  });
   liveReady=true;
   $("syncDotLogin").classList.add("online");
   $("syncLoginText").textContent="Live-Fortschritt verfügbar";
@@ -359,6 +370,8 @@ async function joinLive(){
    if(status==="SUBSCRIBED"){
     try{
      await liveChannel.track(livePayload());
+     lastPresenceTrack=Date.now();
+     liveDirty=false;
      $("syncDot").className="syncdot online";
      $("syncState").lastChild.textContent=" live";
      if(!settled){settled=true;resolve(true)}
@@ -376,23 +389,28 @@ async function joinLive(){
   setTimeout(()=>{if(!settled){settled=true;resolve(false)}},7000);
  });
 }
-async function pushLive(){
+async function pushLive(force=false){
  if(!liveChannel)return;
+ const now=Date.now();
+ // Presence is deliberately slow-changing. Never exceed the Supabase per-client limit.
+ if(!force && (!liveDirty || now-lastPresenceTrack<12000))return;
  try{
   await liveChannel.track(livePayload());
+  lastPresenceTrack=Date.now();
+  liveDirty=false;
   $("syncDot").className="syncdot online";
   $("syncState").lastChild.textContent=" live";
  }catch(e){
   console.warn("Presence update:",e);
   $("syncDot").className="syncdot";
-  $("syncState").lastChild.textContent=" offline";
+  $("syncState").lastChild.textContent=" verbindet neu …";
+  try{supabase.realtime.connect()}catch(_){}
  }
 }
 function save(){
  state.seconds=Math.floor((Date.now()-sessionStart)/1000);
- if(!liveChannel)return;
- clearTimeout(save._t);
- save._t=setTimeout(pushLive,1200);
+ // Mark state as changed; the 15-second live ticker sends one coalesced Presence update.
+ liveDirty=true;
 }
 
 function update(){
@@ -523,7 +541,7 @@ function finalCheckpoint(){
  startTimer("write","final",WRITE.final,()=>{$("finishFinal").disabled=false});
  $("finishFinal").onclick=()=>{if($("finishFinal").disabled)return;state.finalDone=true;badge("final","Mission abgeschlossen");$("interactionPanel").classList.add("hidden");update()};
 }
-function clock(){const s=Math.floor((Date.now()-sessionStart)/1000);state.seconds=s;$("playTime").textContent=fmt(s);if(s>0&&s%5===0)pushLive()}
+function clock(){const s=Math.floor((Date.now()-sessionStart)/1000);state.seconds=s;$("playTime").textContent=fmt(s)}
 function clearPanel(){clearInterval(activeInterval);activeTimer=null;$("interactionPanel").classList.add("hidden");$("viewport").focus()}
 
 $("loginForm").onsubmit=async e=>{
@@ -534,7 +552,13 @@ $("loginForm").onsubmit=async e=>{
  $("who").textContent=n+" · Sitzung "+c;
  $("login").classList.add("hidden");$("game").classList.remove("hidden");
  update();clockInt=setInterval(clock,1000);$("viewport").focus();
- if(liveReady)await joinLive();
+ if(liveReady){
+  const joined=await joinLive();
+  if(joined){
+   clearInterval(liveTicker);
+   liveTicker=setInterval(()=>{liveDirty=true;pushLive(false)},15000);
+  }
+ }
 };
 document.addEventListener("keydown",e=>{if(["INPUT","TEXTAREA"].includes(document.activeElement.tagName))return;const k=e.key.toLowerCase();if(["arrowup","arrowdown","arrowleft","arrowright","w","a","s","d","e"," ","enter"].includes(k))e.preventDefault();if(k==="arrowup"||k==="w")move(0,-18);if(k==="arrowdown"||k==="s")move(0,18);if(k==="arrowleft"||k==="a")move(-18,0);if(k==="arrowright"||k==="d")move(18,0);if(k==="e"||k===" "||k==="enter")interact(near)});
 document.querySelectorAll(".move").forEach(b=>b.onclick=()=>{const d=b.dataset.dir;if(d==="up")move(0,-24);if(d==="down")move(0,24);if(d==="left")move(-24,0);if(d==="right")move(24,0)});
@@ -544,7 +568,10 @@ $("inventoryBtn").onclick=()=>{renderInventory();$("inventoryPanel").classList.r
 $("boardBtn").onclick=()=>{renderBoard();$("boardPanel").classList.remove("hidden")};$("closeBoard").onclick=()=>$("boardPanel").classList.add("hidden");
 $("resetBtn").onclick=()=>{if(!confirm("Aktuelle Sitzung wirklich neu starten? Der Fortschritt geht verloren."))return;location.reload()};
 window.addEventListener("resize",updateCamera);
-window.addEventListener("pagehide",()=>{try{if(liveChannel)liveChannel.untrack()}catch(e){}});
+window.addEventListener("pagehide",()=>{
+ clearInterval(liveTicker);
+ try{if(liveChannel)liveChannel.untrack()}catch(e){}
+});
 await initLiveClient();
 </script>
 </body>
